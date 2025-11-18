@@ -62,6 +62,14 @@ class EqualWeightPortfolio:
         """
         TODO: Complete Task 1 Below
         """
+        # 等權重：所有非 exclude 的資產權重相同
+        n_assets = len(assets)
+        equal_weight = 1.0 / n_assets
+
+        # 對所有日期都給相同權重
+        self.portfolio_weights[assets] = equal_weight
+        # 排除的資產（SPY）權重設為 0
+        self.portfolio_weights[self.exclude] = 0.0
 
         """
         TODO: Complete Task 1 Above
@@ -113,7 +121,31 @@ class RiskParityPortfolio:
         """
         TODO: Complete Task 2 Below
         """
+        # 依照 rolling volatility 做 inverse-volatility 權重
+        # 與 MeanVariancePortfolio 一樣，從 lookback+1 開始有權重，其前面的日子權重保持 NaN -> 之後變成 0
+        for i in range(self.lookback + 1, len(df)):
+            # 過去 lookback 天的報酬
+            window_returns = df_returns[assets].iloc[i - self.lookback : i]
 
+            # 各資產的波動度（標準差）
+            sigma = window_returns.std()
+
+            # 避免除以 0
+            sigma.replace(0, np.nan, inplace=True)
+
+            inv_vol = 1.0 / sigma
+            inv_vol.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+            # 全部都是 nan 的話，就跳過（該列權重維持 NaN，之後會被 ffill 或補 0）
+            if inv_vol.dropna().sum() == 0:
+                continue
+
+            weights = inv_vol / inv_vol.sum()
+
+            # 填入該日權重
+            self.portfolio_weights.loc[df.index[i], assets] = weights.values
+            # 排除資產（SPY）設為 0
+            self.portfolio_weights.loc[df.index[i], self.exclude] = 0.0
 
 
         """
@@ -187,11 +219,24 @@ class MeanVariancePortfolio:
                 """
                 TODO: Complete Task 3 Below
                 """
+                # 決策變數：各資產權重 w_i
+                # long-only: w_i >= 0；同時設定 ub=1 避免單一資產超過 100%（雖然有 sum=1 約束）
+                w = model.addMVar(n, lb=0.0, ub=1.0, name="w")
 
-                # Sample Code: Initialize Decision w and the Objective
-                # NOTE: You can modify the following code
-                w = model.addMVar(n, name="w", ub=1)
-                model.setObjective(w.sum(), gp.GRB.MAXIMIZE)
+                # 預期報酬項 mu^T w
+                lin_term = mu @ w
+
+                # 風險項 w^T Σ w
+                quad_term = w @ Sigma @ w
+
+                # 目標：max ( w^T mu - (gamma / 2) * w^T Σ w )
+                # gamma 越大越風險趨避
+                obj = lin_term - (gamma / 2.0) * quad_term
+                model.setObjective(obj, gp.GRB.MAXIMIZE)
+
+                # no leverage: sum_i w_i = 1
+                model.addConstr(w.sum() == 1.0, name="budget")
+
 
                 """
                 TODO: Complete Task 3 Above
